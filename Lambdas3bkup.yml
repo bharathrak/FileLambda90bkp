@@ -1,0 +1,72 @@
+name: FileLambdaDependencies-Dev
+
+on: workflow_dispatch
+
+jobs:
+  deploy_lambda:
+    runs-on: ubuntu-latest
+
+    env:
+      Lambda: "FileLambdaDependencies" 
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_DEV }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_DEV }}
+          aws-region: us-east-1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v2
+        with:
+          node-version: '16.x'  # Adjust the Node.js version as needed
+
+      - name: Install npm dependencies
+        run: npm install
+
+      - name: Backup to S3
+        run: aws s3 mv s3://frontm-deployments-mobilehub-121/node-layers/FileLambdaDependencies.zip s3://frontm-deployments-mobilehub-121/node-layers/FileLambdaDependencies-$(date +"%Y%m%d%H%M").zip
+
+      - name: Create zip file & upload to S3
+        run: |
+          cd FileLambda
+          rm -rf node_modules && rm -rf nodejs && npm install --production && npm rebuild --target=16.0.0 --target_arch=x64 --target_platform=linux --target_libc=glibc && mkdir -p nodejs && cp -r node_modules nodejs/ && zip -r FileLambdaDependencies.zip nodejs
+          aws s3 cp FileLambda/FileLambdaDependencies.zip s3://frontm-deployments-mobilehub-121/node-layers/
+
+      - name: Update Layer
+        run: aws lambda publish-layer-version --layer-name FileLambdaDependencies --description Location for Layer code in repository-NodeBackend --content S3Bucket=frontm-deployments-mobilehub-1030065648,S3Key=node-layers/FileLambdaDependencies.zip --compatible-runtimes nodejs12.x nodejs14.x --compatible-architectures arm64 x86_64
+
+      - name: Check if zip file exists
+        run: |
+          BACKUP_DIR="s3://fm-deployments-mobilehub-121/node-layers/FileLambdaDependencies/cloudfolks_nuke_tool.zip"
+          LAMBDA_NAME="BillingCycleJob"
+
+          if aws s3 ls "$BACKUP_DIR/$LAMBDA_NAME.zip"; then
+              echo "Backup exists for $LAMBDA_NAME"
+          else
+              echo "No backup found for $LAMBDA_NAME"
+              # Continue with the next step here
+          fi
+
+      - name: Delete backup files older than 90 days
+        run: |
+          BACKUP_DIR="s3://fm-deployments-mobilehub-121/node-layers/FileLambdaDependencies/cloudfolks_nuke_tool.zip"
+          LAMBDA_NAME="BillingCycleJob"
+
+          aws s3 rm --recursive "$BACKUP_DIR/$LAMBDA_NAME*.zip" --exclude "*" --include "$LAMBDA_NAME*.zip" --recursive
+
+      - name: Ensure at least 1 backup file for lambda
+        run: |
+          BACKUP_DIR="s3://fm-deployments-mobilehub-121/node-layers/FileLambdaDependencies/cloudfolks_nuke_tool.zip"
+          LAMBDA_NAME="BillingCycleJob"
+
+          backup_count=$(aws s3 ls "$BACKUP_DIR/$LAMBDA_NAME"*.zip | wc -l)
+          if [ $backup_count -eq 0 ]; then
+              latest_backup=$(aws s3 ls "$BACKUP_DIR/$LAMBDA_NAME"*.zip | sort | tail -n 1 | awk '{print $4}')
+              echo "Keeping latest backup: $latest_backup"
+              aws s3 mv "$BACKUP_DIR/$latest_backup" "$BACKUP_DIR"
+          fi
